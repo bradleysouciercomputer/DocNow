@@ -12,7 +12,9 @@ A clean, responsive writing workspace powered by React, Vite, and Supabase, depl
 - Starred documents and sorting by title or date
 - Duplicate documents and export as Markdown or plain text
 - Responsive desktop and mobile layout
-- Row-level security so each account can access only their own documents
+- Email-based document sharing with Viewer (read-only) and Editor (can edit) roles
+- Collaborator role management, access revocation, and document-specific invitation links
+- Row-level security enforcing document ownership and shared access on every database request
 
 ## Run locally
 
@@ -40,7 +42,7 @@ Every document has its own URL using the `?doc=<document-id>` query parameter. O
 
 ## Supabase setup
 
-The schema is in `supabase/migrations/20261017000000_create_documents_table.sql` and has been applied to the connected DocNow project. Each database policy restricts access to the signed-in document owner.
+The base schema is in `supabase/migrations/20261017000000_create_documents_table.sql`, with collaboration rules in `supabase/migrations/20261017020000_document_sharing.sql`. Both have been applied to the connected DocNow project. Document shares are keyed by normalized email. Invited users must sign in to DocNow with that email address; the database permits Viewers to read and Editors to update document content/title. Only owners can invite people, change roles, revoke access, or delete documents.
 
 In Supabase **Authentication → URL Configuration**, configure the Site URL and allow these redirect URLs:
 - `https://bradleysouciercomputer.github.io/DocNow/`
