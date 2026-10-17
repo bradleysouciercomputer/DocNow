@@ -28,6 +28,7 @@ const iconShapes = {
   eye: <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></>,
   pencil: <><path d="m15 5 4 4M4 20l4.3-.9L19 8.4a2.1 2.1 0 0 0-3-3L5.3 16.1 4 20Z" /></>,
   sort: <><path d="M4 7h16M7 12h10M10 17h4" /></>,
+  share: <><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><path d="m8.7 10.7 6.6-4.4M8.7 13.3l6.6 4.4" /></>,
 };
 
 function Icon({ name, size = 18, strokeWidth = 1.8 }) {
@@ -282,6 +283,16 @@ export default function App() {
   const [globalError, setGlobalError] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [sharedRoleMap, setSharedRoleMap] = useState({});
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareEmail, setShareEmail] = useState("");
+  const [shareRole, setShareRole] = useState("viewer");
+  const [documentShares, setDocumentShares] = useState([]);
+  const [sharesLoading, setSharesLoading] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState("");
+  const [shareSuccess, setShareSuccess] = useState("");
+  const [lastSharedRecipient, setLastSharedRecipient] = useState(null);
   const editorRef = useRef(null);
   const initialUrlHandledUserRef = useRef(null);
   const lastSavedRef = useRef({ title: "", content: "" });
@@ -324,33 +335,45 @@ export default function App() {
       setContent("");
       setView("home");
       setDocumentsLoadedUserId(null);
+      setSharedRoleMap({});
+      setShareModalOpen(false);
       initialUrlHandledUserRef.current = null;
       return undefined;
     }
     let cancelled = false;
     setDocumentsLoading(true);
     setDocumentsLoadedUserId(null);
+    setSharedRoleMap({});
     setGlobalError("");
-    supabase.from("documents")
-      .select("id,user_id,title,content,created_at,updated_at,is_favorite")
-      .order("updated_at", { ascending: false })
-      .then(({ data, error }) => {
-        if (cancelled) return;
-        if (error) {
-          setGlobalError(error.message || "Could not load your documents.");
-          setDocuments([]);
-        } else {
-          setDocuments(data || []);
-          setDocumentsLoadedUserId(session.user.id);
-        }
+    Promise.all([
+      supabase.from("documents")
+        .select("id,user_id,title,content,created_at,updated_at,is_favorite")
+        .order("updated_at", { ascending: false }),
+      supabase.from("document_shares")
+        .select("document_id,role")
+        .eq("shared_with_email", (session.user.email || "").trim().toLowerCase()),
+    ]).then(([documentsResult, sharesResult]) => {
+      if (cancelled) return;
+      if (documentsResult.error) {
+        setGlobalError(documentsResult.error.message || "Could not load your documents.");
+        setDocuments([]);
+      } else {
+        setDocuments(documentsResult.data || []);
+      }
+      if (sharesResult.error) {
+        setSharedRoleMap({});
+        setGlobalError((current) => current || sharesResult.error.message || "Could not load collaboration permissions.");
+      } else {
+        setSharedRoleMap(Object.fromEntries((sharesResult.data || []).map((share) => [share.document_id, share.role])));
+      }
+      if (!documentsResult.error) setDocumentsLoadedUserId(session.user.id);
+      setDocumentsLoading(false);
+    }).catch((error) => {
+      if (!cancelled) {
+        setGlobalError(error?.message || "Could not load your documents.");
         setDocumentsLoading(false);
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setGlobalError(error.message || "Could not load your documents.");
-          setDocumentsLoading(false);
-        }
-      });
+      }
+    });
     return () => { cancelled = true; };
   }, [session?.user?.id]);
 
@@ -413,7 +436,7 @@ export default function App() {
   const filteredDocuments = useMemo(() => {
     const needle = search.trim().toLowerCase();
     const matching = documents.filter((doc) => {
-      if (showFavorites && !doc.is_favorite) return false;
+      if (showFavorites && (!doc.is_favorite || doc.user_id !== session?.user?.id)) return false;
       if (!needle) return true;
       return (doc.title || "").toLowerCase().includes(needle) || (doc.content || "").toLowerCase().includes(needle);
     });
@@ -424,9 +447,12 @@ export default function App() {
       if (sortBy === "oldest") return new Date(a.updated_at) - new Date(b.updated_at);
       return new Date(b.updated_at) - new Date(a.updated_at);
     });
-  }, [documents, search, showFavorites, sortBy]);
+  }, [documents, search, showFavorites, sortBy, session?.user?.id]);
 
   const selectedDoc = documents.find((doc) => doc.id === selectedDocId) || null;
+  const selectedDocRole = !selectedDoc ? null : selectedDoc.user_id === session?.user?.id ? "owner" : (sharedRoleMap[selectedDoc.id] || "viewer");
+  const canEditSelectedDoc = selectedDocRole === "owner" || selectedDocRole === "editor";
+  const canManageSharing = selectedDocRole === "owner";
   const wordCount = useMemo(() => {
     const trimmed = content.trim();
     return trimmed ? trimmed.split(/\s+/).length : 0;
@@ -522,6 +548,7 @@ export default function App() {
     setView("editor");
     setSidebarOpen(false);
     setLinkCopied(false);
+    setShareModalOpen(false);
   }
 
   function showDashboard() {
@@ -529,6 +556,7 @@ export default function App() {
     setView("home");
     setShowFavorites(false);
     setSidebarOpen(false);
+    setShareModalOpen(false);
   }
 
   function showFavoritesPage() {
@@ -540,7 +568,7 @@ export default function App() {
 
   async function toggleFavorite(documentId = selectedDocId) {
     const doc = documents.find((item) => item.id === documentId);
-    if (!doc) return;
+    if (!doc || doc.user_id !== session?.user?.id) return;
     setGlobalError("");
     const { data, error } = await supabase.from("documents")
       .update({ is_favorite: !doc.is_favorite })
@@ -552,6 +580,132 @@ export default function App() {
       return;
     }
     setDocuments((current) => current.map((item) => item.id === documentId ? data : item));
+  }
+
+  async function openShareModal() {
+    if (!selectedDocId || !canManageSharing) return;
+    setShareModalOpen(true);
+    setShareEmail("");
+    setShareRole("viewer");
+    setShareError("");
+    setShareSuccess("");
+    setLastSharedRecipient(null);
+    setSharesLoading(true);
+    const { data, error } = await supabase.from("document_shares")
+      .select("id,document_id,owner_id,shared_with_email,role,created_at")
+      .eq("document_id", selectedDocId)
+      .order("created_at", { ascending: true });
+    if (error) {
+      setShareError(error.message || "Could not load sharing settings.");
+      setDocumentShares([]);
+    } else {
+      setDocumentShares(data || []);
+    }
+    setSharesLoading(false);
+  }
+
+  function invitationMailto(recipientEmail, role) {
+    const url = new URL(documentHref(selectedDocId), window.location.origin).toString();
+    const subject = `You're invited to collaborate on ${title.trim() || "a DocNow document"}`;
+    const body = [
+      "Hi,",
+      "",
+      `I've shared "${title.trim() || "Untitled document"}" with you on DocNow.`,
+      `Your access level is: ${role === "editor" ? "Editor (can make changes)" : "Viewer (read-only)"}.`,
+      "",
+      `Open the document: ${url}`,
+      "",
+      `Please sign in to DocNow using ${recipientEmail}. If you do not have an account yet, create one with this same email address.`,
+      "",
+      "See you there!",
+    ].join("\n");
+    return `mailto:${recipientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }
+
+  async function shareDocument(event) {
+    event.preventDefault();
+    if (!selectedDocId || !session?.user?.id || !canManageSharing || shareBusy) return;
+    const normalizedEmail = shareEmail.trim().toLowerCase();
+    if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setShareError("Enter a valid email address.");
+      return;
+    }
+    if (normalizedEmail === (session.user.email || "").trim().toLowerCase()) {
+      setShareError("You already own this document. Choose someone else's email address.");
+      return;
+    }
+
+    setShareBusy(true);
+    setShareError("");
+    setShareSuccess("");
+    try {
+      const { data, error } = await supabase.from("document_shares")
+        .upsert({
+          document_id: selectedDocId,
+          owner_id: session.user.id,
+          shared_with_email: normalizedEmail,
+          role: shareRole,
+        }, { onConflict: "document_id,shared_with_email" })
+        .select("id,document_id,owner_id,shared_with_email,role,created_at")
+        .single();
+      if (error) throw error;
+      setDocumentShares((current) => {
+        const withoutRecipient = current.filter((item) => item.shared_with_email !== normalizedEmail);
+        return [...withoutRecipient, data].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      });
+      setLastSharedRecipient({ email: normalizedEmail, role: data.role });
+      setShareSuccess(`Access saved for ${normalizedEmail}. Use the email draft below to notify them.`);
+      setShareEmail("");
+    } catch (error) {
+      setShareError(error?.message || "Could not share this document.");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function updateShareRole(shareId, nextRole) {
+    if (!canManageSharing || shareBusy || !["viewer", "editor"].includes(nextRole)) return;
+    setShareBusy(true);
+    setShareError("");
+    setShareSuccess("");
+    try {
+      const { data, error } = await supabase.from("document_shares")
+        .update({ role: nextRole })
+        .eq("id", shareId)
+        .eq("document_id", selectedDocId)
+        .select("id,document_id,owner_id,shared_with_email,role,created_at")
+        .single();
+      if (error) throw error;
+      setDocumentShares((current) => current.map((item) => item.id === shareId ? data : item));
+      setLastSharedRecipient({ email: data.shared_with_email, role: data.role });
+      setShareSuccess(`Updated ${data.shared_with_email} to ${data.role === "editor" ? "Editor" : "Viewer"} access.`);
+    } catch (error) {
+      setShareError(error?.message || "Could not update this collaborator.");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function removeDocumentShare(share) {
+    if (!canManageSharing || shareBusy) return;
+    if (!window.confirm(`Remove ${share.shared_with_email}'s access to this document?`)) return;
+    setShareBusy(true);
+    setShareError("");
+    setShareSuccess("");
+    try {
+      const { error } = await supabase.from("document_shares")
+        .delete()
+        .eq("id", share.id)
+        .eq("document_id", selectedDocId);
+      if (error) throw error;
+      setDocumentShares((current) => current.filter((item) => item.id !== share.id));
+      if (lastSharedRecipient?.email === share.shared_with_email) setLastSharedRecipient(null);
+      setShareSuccess(`Access removed for ${share.shared_with_email}.`);
+    } catch (error) {
+      setShareError(error?.message || "Could not remove this collaborator.");
+    } finally {
+      setShareBusy(false);
+    }
   }
 
   async function duplicateDocument() {
@@ -617,7 +771,7 @@ export default function App() {
   }
 
   function saveDocument(nextTitle = title, nextContent = content) {
-    if (!session?.user?.id || !selectedDocId) return Promise.resolve();
+    if (!session?.user?.id || !selectedDocId || !canEditSelectedDoc) return Promise.resolve();
     const documentId = selectedDocId;
     const safeTitle = nextTitle.trim() || "Untitled document";
     if (lastSavedRef.current.title === safeTitle && lastSavedRef.current.content === nextContent) {
@@ -647,16 +801,16 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!selectedDocId || !session?.user?.id) return undefined;
+    if (!selectedDocId || !session?.user?.id || !canEditSelectedDoc) return undefined;
     const safeTitle = title.trim() || "Untitled document";
     if (lastSavedRef.current.title === safeTitle && lastSavedRef.current.content === content) return undefined;
     setSaveStatus("unsaved");
     const timeout = window.setTimeout(() => { void saveDocument(title, content); }, 700);
     return () => window.clearTimeout(timeout);
-  }, [title, content, selectedDocId, session?.user?.id]);
+  }, [title, content, selectedDocId, session?.user?.id, canEditSelectedDoc]);
 
   async function deleteDocument() {
-    if (!selectedDocId || deleteBusy) return;
+    if (!selectedDocId || deleteBusy || !canManageSharing) return;
     const confirmed = window.confirm("Delete this document? This cannot be undone.");
     if (!confirmed) return;
     setDeleteBusy(true);
@@ -721,6 +875,7 @@ export default function App() {
     if (event.key === "Escape") {
       setUserMenuOpen(false);
       setSidebarOpen(false);
+      setShareModalOpen(false);
     }
   }
 
@@ -761,7 +916,7 @@ export default function App() {
         <div className="sidebar-section-label">WORKSPACE</div>
         <nav className="side-nav" aria-label="Main navigation">
           <button type="button" className={"side-nav-item" + (view === "home" && !showFavorites ? " active" : "")} onClick={showDashboard}><Icon name="home" size={18} /><span>All documents</span><span className="nav-count">{documents.length}</span></button>
-          <button type="button" className={"side-nav-item" + (view === "home" && showFavorites ? " active" : "")} onClick={showFavoritesPage}><Icon name="star" size={18} /><span>Starred</span><span className="nav-count">{documents.filter((doc) => doc.is_favorite).length}</span></button>
+          <button type="button" className={"side-nav-item" + (view === "home" && showFavorites ? " active" : "")} onClick={showFavoritesPage}><Icon name="star" size={18} /><span>Starred</span><span className="nav-count">{documents.filter((doc) => doc.is_favorite && doc.user_id === session.user.id).length}</span></button>
           <button type="button" className={"side-nav-item" + (view === "editor" ? " active" : "")} onClick={() => { if (selectedDocId) setView("editor"); else setView("home"); setSidebarOpen(false); }}><Icon name="clock" size={18} /><span>Currently editing</span></button>
         </nav>
         <div className="sidebar-section sidebar-docs-section">
@@ -810,12 +965,12 @@ export default function App() {
                 {saveStatus === "saving" ? <span className="tiny-spinner" /> : <Icon name={saveStatus === "error" ? "cloud" : "check"} size={14} />}
                 {saveStatus === "saving" ? "Saving changes…" : saveStatus === "unsaved" ? "Unsaved changes" : saveStatus === "error" ? "Save failed" : "All changes saved"}
               </div>
-              <div className="editor-actions"><button type="button" className={"icon-button favorite-button" + (selectedDoc?.is_favorite ? " is-favorite" : "")} aria-label={selectedDoc?.is_favorite ? "Remove from starred" : "Add to starred"} title={selectedDoc?.is_favorite ? "Remove from starred" : "Add to starred"} onClick={() => void toggleFavorite()}><Icon name="star" size={17} /></button><button type="button" className="button button-outline save-button copy-link-button" onClick={() => void copyDocumentLink()} title="Copy this document's link"><Icon name="link" size={15} /> {linkCopied ? "Link copied!" : "Copy link"}</button><button type="button" className="button button-outline save-button duplicate-button" onClick={() => void duplicateDocument()} disabled={duplicating} title="Duplicate document"><Icon name="copy" size={15} /> {duplicating ? "Copying…" : "Duplicate"}</button><button type="button" className="icon-button delete-button" aria-label="Delete document" title="Delete document" onClick={() => void deleteDocument()} disabled={deleteBusy}><Icon name="trash" size={17} /></button><button type="button" className="button button-outline save-button" onClick={() => void saveDocument(title, content)}><Icon name="check" size={16} /> Save now</button></div>
+              <div className="editor-actions">{canManageSharing && <><button type="button" className={"icon-button favorite-button" + (selectedDoc?.is_favorite ? " is-favorite" : "")} aria-label={selectedDoc?.is_favorite ? "Remove from starred" : "Add to starred"} title={selectedDoc?.is_favorite ? "Remove from starred" : "Add to starred"} onClick={() => void toggleFavorite()}><Icon name="star" size={17} /></button><button type="button" className="button button-outline save-button share-button" onClick={() => void openShareModal()} title="Share with people by email"><Icon name="share" size={15} /> Share</button></>}<button type="button" className="button button-outline save-button copy-link-button" onClick={() => void copyDocumentLink()} title="Copy this document's link"><Icon name="link" size={15} /> {linkCopied ? "Link copied!" : "Copy link"}</button><button type="button" className="button button-outline save-button duplicate-button" onClick={() => void duplicateDocument()} disabled={duplicating} title="Duplicate document"><Icon name="copy" size={15} /> {duplicating ? "Copying…" : "Duplicate"}</button>{canManageSharing && <button type="button" className="icon-button delete-button" aria-label="Delete document" title="Delete document" onClick={() => void deleteDocument()} disabled={deleteBusy}><Icon name="trash" size={17} /></button>}{canEditSelectedDoc && <button type="button" className="button button-outline save-button" onClick={() => void saveDocument(title, content)}><Icon name="check" size={16} /> Save now</button>}</div>
             </div>
             <div className="editor-scroll">
               <div className="editor-paper">
-                <div className="document-meta"><span className="document-type"><Icon name="file" size={15} /> DOCUMENT</span><span className="meta-divider">·</span><span>Edited {formatDate(selectedDoc?.updated_at)}</span></div>
-                <input className="document-title-input" aria-label="Document title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Untitled document" maxLength={240} />
+                <div className="document-meta"><span className="document-type"><Icon name="file" size={15} /> DOCUMENT</span><span className="meta-divider">·</span><span>Edited {formatDate(selectedDoc?.updated_at)}</span><span className="meta-divider">·</span><span>{selectedDocRole === "owner" ? "Owner" : selectedDocRole === "editor" ? "Shared · Editor" : "Shared · Viewer"}</span></div>
+                <input className="document-title-input" aria-label="Document title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Untitled document" maxLength={240} readOnly={!canEditSelectedDoc} />
                 <div className="editor-mode-switch" role="tablist" aria-label="Document mode">
                   <button type="button" role="tab" aria-selected={!previewMode} className={!previewMode ? "mode-tab active" : "mode-tab"} onClick={() => setPreviewMode(false)}><Icon name="pencil" size={15} /> Write</button>
                   <button type="button" role="tab" aria-selected={previewMode} className={previewMode ? "mode-tab active" : "mode-tab"} onClick={() => setPreviewMode(true)}><Icon name="eye" size={15} /> Preview</button>
@@ -823,7 +978,7 @@ export default function App() {
                   <button type="button" className="export-button" onClick={() => exportDocument("md")} title="Download Markdown"><Icon name="download" size={14} /> .md</button>
                   <button type="button" className="export-button" onClick={() => exportDocument("txt")} title="Download plain text"><Icon name="download" size={14} /> .txt</button>
                 </div>
-                {!previewMode && <div className="editor-formatbar" role="toolbar" aria-label="Text formatting shortcuts">
+                {canEditSelectedDoc && !previewMode && <div className="editor-formatbar" role="toolbar" aria-label="Text formatting shortcuts">
                   <button type="button" title="Heading" aria-label="Insert heading" onClick={() => applyFormat("# ", "", true)}><Icon name="heading" size={17} /></button>
                   <span className="format-divider" />
                   <button type="button" title="Bold Markdown" aria-label="Bold" onClick={() => applyFormat("**", "**")}><Icon name="bold" size={17} /></button>
@@ -838,9 +993,9 @@ export default function App() {
                 {previewMode ? (
                   <div className="markdown-preview" aria-label="Rendered document preview" dangerouslySetInnerHTML={{ __html: markdownPreview || "<p class='preview-empty'>Nothing to preview yet. Switch to Write to start typing.</p>" }} />
                 ) : (
-                  <textarea ref={editorRef} className="document-editor" aria-label="Document content" value={content} onChange={(event) => setContent(event.target.value)} placeholder={"Start writing something wonderful…\n\nA thought, a plan, a list — it all starts here."} spellCheck />
+                  <textarea ref={editorRef} className="document-editor" aria-label="Document content" value={content} onChange={(event) => setContent(event.target.value)} placeholder={"Start writing something wonderful…\n\nA thought, a plan, a list — it all starts here."} readOnly={!canEditSelectedDoc} spellCheck />
                 )}
-                <div className="editor-bottomline"><span>{wordCount} {wordCount === 1 ? "word" : "words"} <span>·</span> {characterCount} characters</span><span>Private to you <span className="private-dot" /></span></div>
+                <div className="editor-bottomline"><span>{wordCount} {wordCount === 1 ? "word" : "words"} <span>·</span> {characterCount} characters</span><span>{selectedDocRole === "owner" ? "You own this document" : selectedDocRole === "editor" ? "Shared with you · Editor access" : "Shared with you · Viewer access"} <span className="private-dot" /></span></div>
               </div>
             </div>
           </section>
@@ -864,7 +1019,7 @@ export default function App() {
                     event.preventDefault();
                     openDocument(doc);
                   }}>
-                    <div className="document-card-top"><span className="card-file-icon"><Icon name="file" size={18} /></span>{doc.is_favorite && <span className="card-star" title="Starred document"><Icon name="star" size={14} /></span>}<span className="card-updated">{formatDate(doc.updated_at)}</span><span className="card-more" aria-hidden="true">↗</span></div>
+                    <div className="document-card-top"><span className="card-file-icon"><Icon name="file" size={18} /></span>{doc.user_id === session.user.id && doc.is_favorite && <span className="card-star" title="Starred document"><Icon name="star" size={14} /></span>}{doc.user_id !== session.user.id && <span className="card-shared-label">SHARED</span>}<span className="card-updated">{formatDate(doc.updated_at)}</span><span className="card-more" aria-hidden="true">↗</span></div>
                     <h3>{doc.title || "Untitled document"}</h3>
                     <p className={"document-excerpt" + (!excerpt(doc.content) ? " excerpt-empty" : "")}>{excerpt(doc.content) || "A blank page with endless possibilities."}</p>
                     <div className="document-card-footer"><span>{(doc.content || "").trim() ? (doc.content.trim().split(/\s+/).length + " words") : "New document"}</span><span className="card-open-label">Open page <span>→</span></span></div>
@@ -887,6 +1042,52 @@ export default function App() {
           </section>
         )}
       </main>
+      {shareModalOpen && selectedDoc && (
+        <div className="share-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShareModalOpen(false); }}>
+          <section className="share-modal" role="dialog" aria-modal="true" aria-labelledby="share-modal-title">
+            <div className="share-modal-heading">
+              <div><span className="share-modal-kicker">COLLABORATION</span><h2 id="share-modal-title">Share document</h2><p>Invite people by email and choose what they can do.</p></div>
+              <button type="button" className="icon-button share-modal-close" aria-label="Close sharing dialog" onClick={() => setShareModalOpen(false)}>×</button>
+            </div>
+            <div className="share-document-summary"><span className="share-summary-icon"><Icon name="file" size={17} /></span><div><strong>{title.trim() || "Untitled document"}</strong><span>People must sign in to DocNow with the invited email address.</span></div></div>
+            <form className="share-form" onSubmit={(event) => void shareDocument(event)}>
+              <label className="share-field">Email address
+                <input type="email" autoComplete="off" placeholder="colleague@example.com" value={shareEmail} onChange={(event) => setShareEmail(event.target.value)} required disabled={shareBusy} />
+              </label>
+              <label className="share-field">Permission
+                <select value={shareRole} onChange={(event) => setShareRole(event.target.value)} disabled={shareBusy}>
+                  <option value="viewer">Viewer — can read only</option>
+                  <option value="editor">Editor — can make changes</option>
+                </select>
+              </label>
+              <button type="submit" className="button button-primary share-submit" disabled={shareBusy}>
+                {shareBusy ? <span className="button-spinner" /> : <Icon name="share" size={16} />}{shareBusy ? "Saving access…" : "Share document"}
+              </button>
+            </form>
+            {shareError && <div className="form-message form-error share-message" role="alert">{shareError}</div>}
+            {shareSuccess && <div className="form-message form-success share-message" role="status">{shareSuccess}</div>}
+            {lastSharedRecipient && (
+              <a className="button button-outline share-email-draft" href={invitationMailto(lastSharedRecipient.email, lastSharedRecipient.role)}>
+                <Icon name="link" size={15} /> Email invitation to {lastSharedRecipient.email}
+              </a>
+            )}
+            <p className="share-email-note">Access is saved in DocNow immediately. The email button opens a draft in your email app; you still need to send it.</p>
+            <div className="share-list-heading"><h3>People with access</h3><span>{documentShares.length}</span></div>
+            <div className="share-list">
+              {sharesLoading ? <div className="share-empty">Loading people…</div> : documentShares.length ? documentShares.map((share) => (
+                <div className="share-person" key={share.id}>
+                  <span className="share-person-avatar">{initials(share.shared_with_email)}</span>
+                  <div className="share-person-main"><strong>{share.shared_with_email}</strong><span>Invited {formatDate(share.created_at)}</span></div>
+                  <select className="share-role-select" aria-label={`Permission for ${share.shared_with_email}`} value={share.role} onChange={(event) => void updateShareRole(share.id, event.target.value)} disabled={shareBusy}>
+                    <option value="viewer">Viewer</option><option value="editor">Editor</option>
+                  </select>
+                  <button type="button" className="share-remove-button" aria-label={`Remove ${share.shared_with_email}`} title="Remove access" onClick={() => void removeDocumentShare(share)} disabled={shareBusy}>×</button>
+                </div>
+              )) : <div className="share-empty">Only you have access so far. Add an email above to collaborate.</div>}
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
