@@ -59,6 +59,25 @@ function excerpt(content) {
   return (content || "").replace(/[#>*_~\-]/g, "").replace(/\s+/g, " ").trim();
 }
 
+function documentHref(documentId) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("doc", documentId);
+  return url.pathname + url.search + url.hash;
+}
+
+function updateDocumentUrl(documentId, replace = false) {
+  const url = new URL(window.location.href);
+  if (documentId) url.searchParams.set("doc", documentId);
+  else url.searchParams.delete("doc");
+
+  const nextUrl = url.pathname + url.search + url.hash;
+  const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+  if (nextUrl === currentUrl) return;
+
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method]({ ...window.history.state, docNowDocumentId: documentId || null }, "", nextUrl);
+}
+
 function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, busy, error, success, onSubmit, isRecovery }) {
   const isLogin = mode === "login";
   const isSignup = mode === "signup";
@@ -147,6 +166,7 @@ export default function App() {
   const [authSuccess, setAuthSuccess] = useState("");
   const [documents, setDocuments] = useState([]);
   const [documentsLoading, setDocumentsLoading] = useState(false);
+  const [documentsLoadedUserId, setDocumentsLoadedUserId] = useState(null);
   const [creating, setCreating] = useState(false);
   const [view, setView] = useState("home");
   const [selectedDocId, setSelectedDocId] = useState(null);
@@ -158,7 +178,9 @@ export default function App() {
   const [saveStatus, setSaveStatus] = useState("saved");
   const [globalError, setGlobalError] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const editorRef = useRef(null);
+  const initialUrlHandledUserRef = useRef(null);
   const lastSavedRef = useRef({ title: "", content: "" });
   const saveQueueRef = useRef(Promise.resolve());
 
@@ -198,10 +220,13 @@ export default function App() {
       setTitle("");
       setContent("");
       setView("home");
+      setDocumentsLoadedUserId(null);
+      initialUrlHandledUserRef.current = null;
       return undefined;
     }
     let cancelled = false;
     setDocumentsLoading(true);
+    setDocumentsLoadedUserId(null);
     setGlobalError("");
     supabase.from("documents")
       .select("id,user_id,title,content,created_at,updated_at")
@@ -213,6 +238,7 @@ export default function App() {
           setDocuments([]);
         } else {
           setDocuments(data || []);
+          setDocumentsLoadedUserId(session.user.id);
         }
         setDocumentsLoading(false);
       })
@@ -224,6 +250,62 @@ export default function App() {
       });
     return () => { cancelled = true; };
   }, [session?.user?.id]);
+
+  useEffect(() => {
+    const userId = session?.user?.id;
+    if (!userId || documentsLoadedUserId !== userId || initialUrlHandledUserRef.current === userId) return;
+    initialUrlHandledUserRef.current = userId;
+
+    const requestedDocumentId = new URLSearchParams(window.location.search).get("doc");
+    if (!requestedDocumentId) return;
+
+    const document = documents.find((item) => item.id === requestedDocumentId);
+    if (document) {
+      setSelectedDocId(document.id);
+      setTitle(document.title || "Untitled document");
+      setContent(document.content || "");
+      lastSavedRef.current = { title: document.title || "Untitled document", content: document.content || "" };
+      setSaveStatus("saved");
+      setView("editor");
+    } else {
+      setSelectedDocId(null);
+      setView("home");
+      setGlobalError("That document isn't available in this account.");
+      updateDocumentUrl(null, true);
+    }
+  }, [documentsLoadedUserId, session?.user?.id]);
+
+  useEffect(() => {
+    function handlePopState() {
+      const requestedDocumentId = new URLSearchParams(window.location.search).get("doc");
+      if (!requestedDocumentId) {
+        setSelectedDocId(null);
+        setTitle("");
+        setContent("");
+        lastSavedRef.current = { title: "", content: "" };
+        setView("home");
+        return;
+      }
+
+      const document = documents.find((item) => item.id === requestedDocumentId);
+      if (document) {
+        setSelectedDocId(document.id);
+        setTitle(document.title || "Untitled document");
+        setContent(document.content || "");
+        lastSavedRef.current = { title: document.title || "Untitled document", content: document.content || "" };
+        setSaveStatus("saved");
+        setGlobalError("");
+        setView("editor");
+      } else if (documentsLoadedUserId === session?.user?.id) {
+        setSelectedDocId(null);
+        setView("home");
+        setGlobalError("That document isn't available in this account.");
+      }
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [documents, documentsLoadedUserId, session?.user?.id]);
 
   const filteredDocuments = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -296,6 +378,7 @@ export default function App() {
         .single();
       if (error) throw error;
       setDocuments((current) => [data, ...current]);
+      updateDocumentUrl(data.id);
       setSelectedDocId(data.id);
       setTitle(data.title);
       setContent(data.content || "");
@@ -315,6 +398,7 @@ export default function App() {
   }
 
   function openDocument(doc) {
+    updateDocumentUrl(doc.id);
     setSelectedDocId(doc.id);
     setTitle(doc.title || "Untitled document");
     setContent(doc.content || "");
@@ -323,6 +407,26 @@ export default function App() {
     setGlobalError("");
     setView("editor");
     setSidebarOpen(false);
+    setLinkCopied(false);
+  }
+
+  function showDashboard() {
+    updateDocumentUrl(null);
+    setView("home");
+    setSidebarOpen(false);
+  }
+
+  async function copyDocumentLink() {
+    if (!selectedDocId) return;
+    try {
+      const shareUrl = new URL(window.location.href);
+      shareUrl.searchParams.set("doc", selectedDocId);
+      await navigator.clipboard.writeText(shareUrl.toString());
+      setLinkCopied(true);
+      window.setTimeout(() => setLinkCopied(false), 2200);
+    } catch {
+      setGlobalError("Couldn't copy the link automatically. Copy the address from your browser instead.");
+    }
   }
 
   function saveDocument(nextTitle = title, nextContent = content) {
@@ -374,6 +478,7 @@ export default function App() {
       const { error } = await supabase.from("documents").delete().eq("id", selectedDocId);
       if (error) throw error;
       setDocuments((current) => current.filter((doc) => doc.id !== selectedDocId));
+      updateDocumentUrl(null);
       setSelectedDocId(null);
       setTitle("");
       setContent("");
@@ -464,7 +569,7 @@ export default function App() {
         </button>
         <div className="sidebar-section-label">WORKSPACE</div>
         <nav className="side-nav" aria-label="Main navigation">
-          <button type="button" className={"side-nav-item" + (view === "home" ? " active" : "")} onClick={() => { setView("home"); setSidebarOpen(false); }}><Icon name="home" size={18} /><span>All documents</span><span className="nav-count">{documents.length}</span></button>
+          <button type="button" className={"side-nav-item" + (view === "home" ? " active" : "")} onClick={showDashboard}><Icon name="home" size={18} /><span>All documents</span><span className="nav-count">{documents.length}</span></button>
           <button type="button" className={"side-nav-item" + (view === "editor" ? " active" : "")} onClick={() => { if (selectedDocId) setView("editor"); else setView("home"); setSidebarOpen(false); }}><Icon name="clock" size={18} /><span>Currently editing</span></button>
         </nav>
         <div className="sidebar-section sidebar-docs-section">
@@ -508,12 +613,12 @@ export default function App() {
         {view === "editor" && selectedDocId ? (
           <section className="editor-page">
             <div className="editor-topline">
-              <button type="button" className="back-to-docs" onClick={() => setView("home")}><Icon name="arrow" size={16} /> All documents</button>
+              <button type="button" className="back-to-docs" onClick={showDashboard}><Icon name="arrow" size={16} /> All documents</button>
               <div className={"save-indicator status-" + saveStatus}>
                 {saveStatus === "saving" ? <span className="tiny-spinner" /> : <Icon name={saveStatus === "error" ? "cloud" : "check"} size={14} />}
                 {saveStatus === "saving" ? "Saving changes…" : saveStatus === "unsaved" ? "Unsaved changes" : saveStatus === "error" ? "Save failed" : "All changes saved"}
               </div>
-              <div className="editor-actions"><button type="button" className="icon-button delete-button" aria-label="Delete document" title="Delete document" onClick={() => void deleteDocument()} disabled={deleteBusy}><Icon name="trash" size={17} /></button><button type="button" className="button button-outline save-button" onClick={() => void saveDocument(title, content)}><Icon name="check" size={16} /> Save now</button></div>
+              <div className="editor-actions"><button type="button" className="button button-outline save-button copy-link-button" onClick={() => void copyDocumentLink()} title="Copy this document's link"><Icon name="link" size={15} /> {linkCopied ? "Link copied!" : "Copy link"}</button><button type="button" className="icon-button delete-button" aria-label="Delete document" title="Delete document" onClick={() => void deleteDocument()} disabled={deleteBusy}><Icon name="trash" size={17} /></button><button type="button" className="button button-outline save-button" onClick={() => void saveDocument(title, content)}><Icon name="check" size={16} /> Save now</button></div>
             </div>
             <div className="editor-scroll">
               <div className="editor-paper">
@@ -551,12 +656,16 @@ export default function App() {
             ) : filteredDocuments.length ? (
               <div className="document-grid">
                 {filteredDocuments.map((doc, index) => (
-                  <button type="button" key={doc.id} className={"document-card card-tone-" + (index % 4)} onClick={() => openDocument(doc)}>
+                  <a href={documentHref(doc.id)} key={doc.id} className={"document-card card-tone-" + (index % 4)} onClick={(event) => {
+                    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+                    event.preventDefault();
+                    openDocument(doc);
+                  }}>
                     <div className="document-card-top"><span className="card-file-icon"><Icon name="file" size={18} /></span><span className="card-updated">{formatDate(doc.updated_at)}</span><span className="card-more" aria-hidden="true">↗</span></div>
                     <h3>{doc.title || "Untitled document"}</h3>
                     <p className={"document-excerpt" + (!excerpt(doc.content) ? " excerpt-empty" : "")}>{excerpt(doc.content) || "A blank page with endless possibilities."}</p>
                     <div className="document-card-footer"><span>{(doc.content || "").trim() ? (doc.content.trim().split(/\s+/).length + " words") : "New document"}</span><span className="card-open-label">Open page <span>→</span></span></div>
-                  </button>
+                  </a>
                 ))}
                 <button type="button" className="create-card" onClick={() => void createDocument()} disabled={creating}>
                   <span className="create-card-icon"><Icon name="plus" size={20} /></span><strong>Create a new page</strong><span>Give that next idea some space.</span>
