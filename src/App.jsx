@@ -1037,7 +1037,11 @@ export default function App() {
         titleSyncRef.current = titleValue;
         setTitle(titleValue);
       }
-      await channel.track({ ...presenceBase, collab_ready: true });
+      try {
+        await channel.track({ ...presenceBase, collab_ready: true });
+      } catch {
+        // Document autosave remains available if realtime presence tracking is unavailable.
+      }
       refreshPresence();
     };
 
@@ -1171,7 +1175,11 @@ export default function App() {
       if (!alive) return;
       if (status === "SUBSCRIBED") {
         setCollaborationStatus("connected");
-        await channel.track(presenceBase);
+        try {
+          await channel.track(presenceBase);
+        } catch {
+          // Continue document editing even if presence tracking is temporarily unavailable.
+        }
         refreshPresence();
         bootstrapTimer = window.setTimeout(() => {
           if (!alive || collabReadyRef.current) return;
