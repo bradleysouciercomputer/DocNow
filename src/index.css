@@ -184,7 +184,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .documents-view-label { color: #999eaa; letter-spacing: .8px; font-size: 9px; font-weight: 800; display: inline-flex; gap: 7px; align-items: center; }
 .documents-view-label svg { color: #a0a5af; }
 .document-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.document-card { position: relative; padding: 17px 17px 0; height: 206px; overflow: hidden; border: 1px solid #e7e8e6; background: #fff; border-radius: 12px; text-align: left; color: #252b35; display: flex; flex-direction: column; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+.document-card { position: relative; padding: 17px 17px 0; height: 206px; overflow: hidden; border: 1px solid #e7e8e6; background: #fff; border-radius: 12px; text-align: left; text-decoration: none; color: #252b35; display: flex; flex-direction: column; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
 .document-card:hover { transform: translateY(-3px); border-color: #d4d8f4; box-shadow: 0 12px 28px rgba(32, 38, 54, .055); }
 .document-card-top { display: flex; align-items: center; }
 .card-file-icon { width: 31px; height: 31px; display: grid; place-items: center; color: #5a6de2; background: #edf0ff; border-radius: 9px; }
