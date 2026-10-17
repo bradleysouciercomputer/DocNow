@@ -8,7 +8,9 @@ A clean, responsive writing workspace powered by React, Vite, and Supabase, depl
 - Email confirmation and password-reset flows
 - Personal document dashboard with search
 - Create, edit, autosave, and delete documents
-- Markdown-friendly writing toolbar and word/character counts
+- Markdown-friendly writing toolbar, rendered preview, and word/character counts
+- Starred documents and sorting by title or date
+- Duplicate documents and export as Markdown or plain text
 - Responsive desktop and mobile layout
 - Row-level security so each account can access only their own documents
 
