@@ -38,7 +38,7 @@ The Vite base path is configured as `/DocNow/`, including the favicon and Supaba
 
 ## Document-specific links
 
-Every document has its own URL using the `?doc=<document-id>` query parameter. Opening a document updates the browser address, so it can be bookmarked, copied, opened in another tab, or restored after a refresh. The editor's **Copy link** button copies that URL. Because documents are private by default, the link opens the document only when signed into the owning account; it does not grant public access to the document.
+Every document has its own URL using the `?doc=<document-id>` query parameter. Opening a document updates the browser address, so it can be bookmarked, copied, opened in another tab, or restored after a refresh. The editor's **Copy link** button copies that URL. Links do not grant public access by themselves: the owner and collaborators explicitly invited by email can open the document when signed in, and invited collaborators must use the same email address that received access.
 
 ## Supabase setup
 
