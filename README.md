@@ -32,6 +32,10 @@ The site is built with Vite and automatically deployed by `.github/workflows/bui
 
 The Vite base path is configured as `/DocNow/`, including the favicon and Supabase authentication redirects.
 
+## Document-specific links
+
+Every document has its own URL using the `?doc=<document-id>` query parameter. Opening a document updates the browser address, so it can be bookmarked, copied, opened in another tab, or restored after a refresh. The editor's **Copy link** button copies that URL. Because documents are private by default, the link opens the document only when signed into the owning account; it does not grant public access to the document.
+
 ## Supabase setup
 
 The schema is in `supabase/migrations/20261017000000_create_documents_table.sql` and has been applied to the connected DocNow project. Each database policy restricts access to the signed-in document owner.
