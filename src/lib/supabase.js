@@ -1,13 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
-const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
+// The publishable key is intended for browser clients; access is restricted by RLS.
+// Environment variables can override these defaults for preview or alternate environments.
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "https://terbpositrzvudxyhfuc.supabase.co";
+const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_LuOwWiU_2eOhCW6roWhvEQ_Lydf573o";
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && publishableKey);
-
-// A placeholder keeps the module importable so the app can display setup
-// instructions before environment variables have been configured.
-export const supabase = createClient(
-  supabaseUrl || "https://placeholder.supabase.co",
-  publishableKey || "placeholder-publishable-key"
-);
+export const supabase = createClient(supabaseUrl, publishableKey);
