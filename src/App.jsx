@@ -22,6 +22,12 @@ const iconShapes = {
   trash: <><path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15M10 10v7M14 10v7" /></>,
   arrow: <><path d="M19 12H5M12 19l-7-7 7-7" /></>,
   sparkle: <><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /><path d="m19 16 .8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z" /></>,
+  star: <path d="m12 3 2.8 5.7 6.3.9-4.55 4.43 1.08 6.27L12 17.35l-5.63 2.95 1.08-6.27L2.9 9.6l6.3-.9L12 3Z" />,
+  copy: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>,
+  download: <><path d="M12 3v12m-5-5 5 5 5-5" /><path d="M5 17v3h14v-3" /></>,
+  eye: <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></>,
+  pencil: <><path d="m15 5 4 4M4 20l4.3-.9L19 8.4a2.1 2.1 0 0 0-3-3L5.3 16.1 4 20Z" /></>,
+  sort: <><path d="M4 7h16M7 12h10M10 17h4" /></>,
 };
 
 function Icon({ name, size = 18, strokeWidth = 1.8 }) {
@@ -57,6 +63,99 @@ function formatDate(value) {
 
 function excerpt(content) {
   return (content || "").replace(/[#>*_~\-]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[char]);
+}
+
+function renderInlineMarkdown(value) {
+  let html = escapeHtml(value);
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  html = html.replace(/[([^]]+)]((https?:\/\/[^\s)]+|mailto:[^\s)]+))/g,
+    (_match, label, href) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+  html = html.replace(/**(.+?)**/g, "<strong>$1</strong>");
+  html = html.replace(/(^|[^*])*([^*\n]+)*/g, "$1<em>$2</em>");
+  return html;
+}
+
+function renderMarkdown(source) {
+  const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+  const html = [];
+  let paragraph = [];
+  let listItems = [];
+  let listTag = "";
+  let quoteLines = [];
+  let codeLines = null;
+
+  const flushParagraph = () => {
+    if (paragraph.length) html.push(`<p>${paragraph.map(renderInlineMarkdown).join("<br>")}</p>`);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (listItems.length) html.push(`<${listTag}>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${listTag}>`);
+    listItems = [];
+    listTag = "";
+  };
+  const flushQuote = () => {
+    if (quoteLines.length) html.push(`<blockquote>${quoteLines.map(renderInlineMarkdown).join("<br>")}</blockquote>`);
+    quoteLines = [];
+  };
+  const flushTextBlocks = () => { flushParagraph(); flushList(); flushQuote(); };
+
+  for (const line of lines) {
+    if (codeLines) {
+      if (/^\s*```/.test(line)) {
+        html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+        codeLines = null;
+      } else {
+        codeLines.push(line);
+      }
+      continue;
+    }
+    if (/^\s*```/.test(line)) {
+      flushTextBlocks();
+      codeLines = [];
+      continue;
+    }
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      flushTextBlocks();
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+    const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
+    const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+    if (unordered || ordered) {
+      flushParagraph();
+      flushQuote();
+      const nextTag = unordered ? "ul" : "ol";
+      if (listTag && listTag !== nextTag) flushList();
+      listTag = nextTag;
+      listItems.push((unordered || ordered)[1]);
+      continue;
+    }
+    const quote = line.match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      flushParagraph();
+      flushList();
+      quoteLines.push(quote[1]);
+      continue;
+    }
+    if (!line.trim()) {
+      flushTextBlocks();
+      continue;
+    }
+    flushList();
+    flushQuote();
+    paragraph.push(line);
+  }
+  if (codeLines) html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+  flushTextBlocks();
+  return html.join("\n");
 }
 
 function documentHref(documentId) {
@@ -168,6 +267,10 @@ export default function App() {
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [documentsLoadedUserId, setDocumentsLoadedUserId] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
+  const [sortBy, setSortBy] = useState("updated");
+  const [showFavorites, setShowFavorites] = useState(false);
+  const [previewMode, setPreviewMode] = useState(false);
   const [view, setView] = useState("home");
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [title, setTitle] = useState("");
@@ -229,7 +332,7 @@ export default function App() {
     setDocumentsLoadedUserId(null);
     setGlobalError("");
     supabase.from("documents")
-      .select("id,user_id,title,content,created_at,updated_at")
+      .select("id,user_id,title,content,created_at,updated_at,is_favorite")
       .order("updated_at", { ascending: false })
       .then(({ data, error }) => {
         if (cancelled) return;
@@ -309,9 +412,19 @@ export default function App() {
 
   const filteredDocuments = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    if (!needle) return documents;
-    return documents.filter((doc) => (doc.title || "").toLowerCase().includes(needle) || (doc.content || "").toLowerCase().includes(needle));
-  }, [documents, search]);
+    const matching = documents.filter((doc) => {
+      if (showFavorites && !doc.is_favorite) return false;
+      if (!needle) return true;
+      return (doc.title || "").toLowerCase().includes(needle) || (doc.content || "").toLowerCase().includes(needle);
+    });
+    return matching.sort((a, b) => {
+      if (sortBy === "title-asc") return (a.title || "").localeCompare(b.title || "");
+      if (sortBy === "title-desc") return (b.title || "").localeCompare(a.title || "");
+      if (sortBy === "created") return new Date(b.created_at) - new Date(a.created_at);
+      if (sortBy === "oldest") return new Date(a.updated_at) - new Date(b.updated_at);
+      return new Date(b.updated_at) - new Date(a.updated_at);
+    });
+  }, [documents, search, showFavorites, sortBy]);
 
   const selectedDoc = documents.find((doc) => doc.id === selectedDocId) || null;
   const wordCount = useMemo(() => {
@@ -319,6 +432,7 @@ export default function App() {
     return trimmed ? trimmed.split(/\s+/).length : 0;
   }, [content]);
   const characterCount = content.length;
+  const markdownPreview = useMemo(() => renderMarkdown(content), [content]);
 
   async function handleAuthSubmit(event) {
     event.preventDefault();
@@ -413,7 +527,80 @@ export default function App() {
   function showDashboard() {
     updateDocumentUrl(null);
     setView("home");
+    setShowFavorites(false);
     setSidebarOpen(false);
+  }
+
+  function showFavoritesPage() {
+    updateDocumentUrl(null);
+    setView("home");
+    setShowFavorites(true);
+    setSidebarOpen(false);
+  }
+
+  async function toggleFavorite(documentId = selectedDocId) {
+    const doc = documents.find((item) => item.id === documentId);
+    if (!doc) return;
+    setGlobalError("");
+    const { data, error } = await supabase.from("documents")
+      .update({ is_favorite: !doc.is_favorite })
+      .eq("id", documentId)
+      .select("*")
+      .single();
+    if (error) {
+      setGlobalError(error.message || "Couldn't update this document's favorite status.");
+      return;
+    }
+    setDocuments((current) => current.map((item) => item.id === documentId ? data : item));
+  }
+
+  async function duplicateDocument() {
+    if (!selectedDocId || duplicating || !session?.user?.id) return;
+    setDuplicating(true);
+    setGlobalError("");
+    try {
+      const duplicateTitle = `${title.trim() || "Untitled document"} (copy)`.slice(0, 240);
+      const { data, error } = await supabase.from("documents")
+        .insert({ user_id: session.user.id, title: duplicateTitle, content, is_favorite: false })
+        .select("*")
+        .single();
+      if (error) throw error;
+      setDocuments((current) => [data, ...current]);
+      openDocument(data);
+    } catch (error) {
+      setGlobalError(error?.message || "Couldn't duplicate this document.");
+    } finally {
+      setDuplicating(false);
+    }
+  }
+
+  function exportDocument(format = "md") {
+    if (!selectedDocId) return;
+    const safeName = (title.trim() || "Untitled document")
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
+      .trim()
+      .slice(0, 100) || "document";
+    const plainText = content
+      .replace(/^\s*```[^\n]*\n?/gm, "")
+      .replace(/^\s*```\s*$/gm, "")
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/^>\s?/gm, "")
+      .replace(/^\s*[-*+]\s+/gm, "• ")
+      .replace(/^\s*\d+\.\s+/gm, "")
+      .replace(/\*\*(.+?)\*\*/g, "$1")
+      .replace(/\*(.+?)\*/g, "$1")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "$1 ($2)");
+    const exported = format === "txt" ? plainText : `# ${title.trim() || "Untitled document"}\n\n${content}`;
+    const blob = new Blob([exported], { type: format === "txt" ? "text/plain;charset=utf-8" : "text/markdown;charset=utf-8" });
+    const href = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.download = `${safeName}.${format}`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(href);
   }
 
   async function copyDocumentLink() {
@@ -527,6 +714,10 @@ export default function App() {
       event.preventDefault();
       void createDocument();
     }
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "d") {
+      event.preventDefault();
+      void duplicateDocument();
+    }
     if (event.key === "Escape") {
       setUserMenuOpen(false);
       setSidebarOpen(false);
@@ -569,7 +760,8 @@ export default function App() {
         </button>
         <div className="sidebar-section-label">WORKSPACE</div>
         <nav className="side-nav" aria-label="Main navigation">
-          <button type="button" className={"side-nav-item" + (view === "home" ? " active" : "")} onClick={showDashboard}><Icon name="home" size={18} /><span>All documents</span><span className="nav-count">{documents.length}</span></button>
+          <button type="button" className={"side-nav-item" + (view === "home" && !showFavorites ? " active" : "")} onClick={showDashboard}><Icon name="home" size={18} /><span>All documents</span><span className="nav-count">{documents.length}</span></button>
+          <button type="button" className={"side-nav-item" + (view === "home" && showFavorites ? " active" : "")} onClick={showFavoritesPage}><Icon name="star" size={18} /><span>Starred</span><span className="nav-count">{documents.filter((doc) => doc.is_favorite).length}</span></button>
           <button type="button" className={"side-nav-item" + (view === "editor" ? " active" : "")} onClick={() => { if (selectedDocId) setView("editor"); else setView("home"); setSidebarOpen(false); }}><Icon name="clock" size={18} /><span>Currently editing</span></button>
         </nav>
         <div className="sidebar-section sidebar-docs-section">
@@ -618,13 +810,20 @@ export default function App() {
                 {saveStatus === "saving" ? <span className="tiny-spinner" /> : <Icon name={saveStatus === "error" ? "cloud" : "check"} size={14} />}
                 {saveStatus === "saving" ? "Saving changes…" : saveStatus === "unsaved" ? "Unsaved changes" : saveStatus === "error" ? "Save failed" : "All changes saved"}
               </div>
-              <div className="editor-actions"><button type="button" className="button button-outline save-button copy-link-button" onClick={() => void copyDocumentLink()} title="Copy this document's link"><Icon name="link" size={15} /> {linkCopied ? "Link copied!" : "Copy link"}</button><button type="button" className="icon-button delete-button" aria-label="Delete document" title="Delete document" onClick={() => void deleteDocument()} disabled={deleteBusy}><Icon name="trash" size={17} /></button><button type="button" className="button button-outline save-button" onClick={() => void saveDocument(title, content)}><Icon name="check" size={16} /> Save now</button></div>
+              <div className="editor-actions"><button type="button" className={"icon-button favorite-button" + (selectedDoc?.is_favorite ? " is-favorite" : "")} aria-label={selectedDoc?.is_favorite ? "Remove from starred" : "Add to starred"} title={selectedDoc?.is_favorite ? "Remove from starred" : "Add to starred"} onClick={() => void toggleFavorite()}><Icon name="star" size={17} /></button><button type="button" className="button button-outline save-button copy-link-button" onClick={() => void copyDocumentLink()} title="Copy this document's link"><Icon name="link" size={15} /> {linkCopied ? "Link copied!" : "Copy link"}</button><button type="button" className="button button-outline save-button duplicate-button" onClick={() => void duplicateDocument()} disabled={duplicating} title="Duplicate document"><Icon name="copy" size={15} /> {duplicating ? "Copying…" : "Duplicate"}</button><button type="button" className="icon-button delete-button" aria-label="Delete document" title="Delete document" onClick={() => void deleteDocument()} disabled={deleteBusy}><Icon name="trash" size={17} /></button><button type="button" className="button button-outline save-button" onClick={() => void saveDocument(title, content)}><Icon name="check" size={16} /> Save now</button></div>
             </div>
             <div className="editor-scroll">
               <div className="editor-paper">
                 <div className="document-meta"><span className="document-type"><Icon name="file" size={15} /> DOCUMENT</span><span className="meta-divider">·</span><span>Edited {formatDate(selectedDoc?.updated_at)}</span></div>
                 <input className="document-title-input" aria-label="Document title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Untitled document" maxLength={240} />
-                <div className="editor-formatbar" role="toolbar" aria-label="Text formatting shortcuts">
+                <div className="editor-mode-switch" role="tablist" aria-label="Document mode">
+                  <button type="button" role="tab" aria-selected={!previewMode} className={!previewMode ? "mode-tab active" : "mode-tab"} onClick={() => setPreviewMode(false)}><Icon name="pencil" size={15} /> Write</button>
+                  <button type="button" role="tab" aria-selected={previewMode} className={previewMode ? "mode-tab active" : "mode-tab"} onClick={() => setPreviewMode(true)}><Icon name="eye" size={15} /> Preview</button>
+                  <div className="formatbar-spacer" />
+                  <button type="button" className="export-button" onClick={() => exportDocument("md")} title="Download Markdown"><Icon name="download" size={14} /> .md</button>
+                  <button type="button" className="export-button" onClick={() => exportDocument("txt")} title="Download plain text"><Icon name="download" size={14} /> .txt</button>
+                </div>
+                {!previewMode && <div className="editor-formatbar" role="toolbar" aria-label="Text formatting shortcuts">
                   <button type="button" title="Heading" aria-label="Insert heading" onClick={() => applyFormat("# ", "", true)}><Icon name="heading" size={17} /></button>
                   <span className="format-divider" />
                   <button type="button" title="Bold Markdown" aria-label="Bold" onClick={() => applyFormat("**", "**")}><Icon name="bold" size={17} /></button>
@@ -635,8 +834,12 @@ export default function App() {
                   <button type="button" title="Link Markdown" aria-label="Insert link" onClick={() => applyFormat("[", "](https://)")}><Icon name="link" size={17} /></button>
                   <div className="formatbar-spacer" />
                   <span className="format-help">Markdown shortcuts</span>
-                </div>
-                <textarea ref={editorRef} className="document-editor" aria-label="Document content" value={content} onChange={(event) => setContent(event.target.value)} placeholder={"Start writing something wonderful…\n\nA thought, a plan, a list — it all starts here."} spellCheck />
+                </div>}
+                {previewMode ? (
+                  <div className="markdown-preview" aria-label="Rendered document preview" dangerouslySetInnerHTML={{ __html: markdownPreview || "<p class='preview-empty'>Nothing to preview yet. Switch to Write to start typing.</p>" }} />
+                ) : (
+                  <textarea ref={editorRef} className="document-editor" aria-label="Document content" value={content} onChange={(event) => setContent(event.target.value)} placeholder={"Start writing something wonderful…\n\nA thought, a plan, a list — it all starts here."} spellCheck />
+                )}
                 <div className="editor-bottomline"><span>{wordCount} {wordCount === 1 ? "word" : "words"} <span>·</span> {characterCount} characters</span><span>Private to you <span className="private-dot" /></span></div>
               </div>
             </div>
@@ -649,7 +852,7 @@ export default function App() {
               <div className="dashboard-stat-row"><div className="stat-chip"><span className="stat-icon"><Icon name="files" size={16} /></span><span><strong>{documents.length}</strong> {documents.length === 1 ? "document" : "documents"}</span></div><span className="stat-dot" /><span className="stat-caption">Synced to your workspace</span><span className="stat-sync"><Icon name="cloud" size={15} /> Live sync</span></div>
             </div>
 
-            <div className="documents-heading-row"><div><h2>{search.trim() ? "Search results" : "Your documents"}</h2><p>{search.trim() ? "Matching pages from your workspace" : "Pick up where you left off."}</p></div><div className="documents-view-label"><Icon name="files" size={16} /> {filteredDocuments.length} {filteredDocuments.length === 1 ? "PAGE" : "PAGES"}</div></div>
+            <div className="documents-heading-row"><div><h2>{showFavorites ? "Starred documents" : search.trim() ? "Search results" : "Your documents"}</h2><p>{showFavorites ? "The pages you marked as favorites." : search.trim() ? "Matching pages from your workspace" : "Pick up where you left off."}</p></div><div className="documents-heading-actions"><label className="sort-control"><Icon name="sort" size={15} /><select aria-label="Sort documents" value={sortBy} onChange={(event) => setSortBy(event.target.value)}><option value="updated">Recently edited</option><option value="created">Recently created</option><option value="oldest">Least recently edited</option><option value="title-asc">Title A–Z</option><option value="title-desc">Title Z–A</option></select></label><div className="documents-view-label"><Icon name="files" size={16} /> {filteredDocuments.length} {filteredDocuments.length === 1 ? "PAGE" : "PAGES"}</div></div></div>
 
             {documentsLoading ? (
               <div className="documents-loading"><span className="large-spinner" /><p>Finding your documents…</p></div>
@@ -661,7 +864,7 @@ export default function App() {
                     event.preventDefault();
                     openDocument(doc);
                   }}>
-                    <div className="document-card-top"><span className="card-file-icon"><Icon name="file" size={18} /></span><span className="card-updated">{formatDate(doc.updated_at)}</span><span className="card-more" aria-hidden="true">↗</span></div>
+                    <div className="document-card-top"><span className="card-file-icon"><Icon name="file" size={18} /></span>{doc.is_favorite && <span className="card-star" title="Starred document"><Icon name="star" size={14} /></span>}<span className="card-updated">{formatDate(doc.updated_at)}</span><span className="card-more" aria-hidden="true">↗</span></div>
                     <h3>{doc.title || "Untitled document"}</h3>
                     <p className={"document-excerpt" + (!excerpt(doc.content) ? " excerpt-empty" : "")}>{excerpt(doc.content) || "A blank page with endless possibilities."}</p>
                     <div className="document-card-footer"><span>{(doc.content || "").trim() ? (doc.content.trim().split(/\s+/).length + " words") : "New document"}</span><span className="card-open-label">Open page <span>→</span></span></div>
