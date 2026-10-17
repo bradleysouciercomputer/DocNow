@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isSupabaseConfigured, supabase } from "./lib/supabase.js";
+import * as Y from "yjs";
 
 const iconShapes = {
   file: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M8 13h8M8 17h6" /></>,
@@ -159,6 +160,92 @@ function renderMarkdown(source) {
   return html.join("\n");
 }
 
+
+
+function encodeBase64(bytes) {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return window.btoa(binary);
+}
+
+function decodeBase64(encoded) {
+  const binary = window.atob(encoded || "");
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function applyTextDiff(yDoc, yText, nextValue, origin = "local-editor") {
+  const previous = yText.toString();
+  const next = String(nextValue ?? "");
+  if (previous === next) return;
+  let prefix = 0;
+  const prefixLimit = Math.min(previous.length, next.length);
+  while (prefix < prefixLimit && previous[prefix] === next[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < previous.length - prefix &&
+    suffix < next.length - prefix &&
+    previous[previous.length - 1 - suffix] === next[next.length - 1 - suffix]
+  ) suffix += 1;
+  yDoc.transact(() => {
+    const deleteCount = previous.length - prefix - suffix;
+    const inserted = next.slice(prefix, next.length - suffix);
+    if (deleteCount > 0) yText.delete(prefix, deleteCount);
+    if (inserted) yText.insert(prefix, inserted);
+  }, origin);
+}
+
+function textareaCaretCoordinates(textarea, index) {
+  if (!textarea) return null;
+  const computed = window.getComputedStyle(textarea);
+  const rect = textarea.getBoundingClientRect();
+  const mirror = document.createElement("div");
+  const copiedStyles = [
+    "boxSizing", "width", "height", "paddingTop", "paddingRight", "paddingBottom",
+    "paddingLeft", "fontFamily", "fontSize", "fontWeight", "fontStyle", "fontVariant",
+    "letterSpacing", "lineHeight", "textAlign", "textIndent", "textTransform",
+    "wordSpacing", "tabSize", "borderTopWidth", "borderRightWidth", "borderBottomWidth",
+    "borderLeftWidth",
+  ];
+  copiedStyles.forEach((property) => { mirror.style[property] = computed[property]; });
+  mirror.style.position = "fixed";
+  mirror.style.left = rect.left + "px";
+  mirror.style.top = rect.top + "px";
+  mirror.style.visibility = "hidden";
+  mirror.style.pointerEvents = "none";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.overflowWrap = "break-word";
+  mirror.style.overflow = "hidden";
+  mirror.style.margin = "0";
+  const value = textarea.value;
+  const safeIndex = Math.max(0, Math.min(index, value.length));
+  mirror.textContent = value.slice(0, safeIndex);
+  if (value.slice(0, safeIndex).endsWith("\n")) mirror.appendChild(document.createTextNode("\u200b"));
+  const marker = document.createElement("span");
+  marker.textContent = value.slice(safeIndex, safeIndex + 1) || "\u200b";
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const markerRect = marker.getBoundingClientRect();
+  const mirrorRect = mirror.getBoundingClientRect();
+  const coords = {
+    top: markerRect.top - mirrorRect.top - textarea.scrollTop,
+    left: markerRect.left - mirrorRect.left - textarea.scrollLeft,
+    height: Number.parseFloat(computed.lineHeight) || Number.parseFloat(computed.fontSize) * 1.5 || 18,
+  };
+  mirror.remove();
+  return coords;
+}
+
+function collaboratorColor(seed) {
+  const palette = ["#5669df", "#d16b4d", "#159a83", "#b35ca8", "#b27c27", "#397ab8"];
+  let hash = 0;
+  for (const char of String(seed || "")) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return palette[hash % palette.length];
+}
+
 function documentHref(documentId) {
   const url = new URL(window.location.href);
   url.searchParams.set("doc", documentId);
@@ -293,7 +380,21 @@ export default function App() {
   const [shareError, setShareError] = useState("");
   const [shareSuccess, setShareSuccess] = useState("");
   const [lastSharedRecipient, setLastSharedRecipient] = useState(null);
+  const [activeCollaborators, setActiveCollaborators] = useState([]);
+  const [remoteCarets, setRemoteCarets] = useState([]);
+  const [collaborationStatus, setCollaborationStatus] = useState("offline");
+  const [collaborationReady, setCollaborationReady] = useState(false);
+  const [caretRenderTick, setCaretRenderTick] = useState(0);
   const editorRef = useRef(null);
+  const collabDocRef = useRef(null);
+  const collabTextRef = useRef(null);
+  const collabChannelRef = useRef(null);
+  const collabReadyRef = useRef(false);
+  const collabTabIdRef = useRef(null);
+  const collabCaretTimerRef = useRef(null);
+  const collabTypingTimerRef = useRef(null);
+  const titleSyncRef = useRef(title);
+  titleSyncRef.current = title;
   const initialUrlHandledUserRef = useRef(null);
   const lastSavedRef = useRef({ title: "", content: "" });
   const saveQueueRef = useRef(Promise.resolve());
@@ -698,6 +799,8 @@ export default function App() {
         .eq("id", share.id)
         .eq("document_id", selectedDocId);
       if (error) throw error;
+      const liveChannel = collabChannelRef.current;
+      if (liveChannel) void liveChannel.send({ type: "broadcast", event: "access-revoked", payload: { email: share.shared_with_email } }).catch(() => undefined);
       setDocumentShares((current) => current.filter((item) => item.id !== share.id));
       if (lastSharedRecipient?.email === share.shared_with_email) setLastSharedRecipient(null);
       setShareSuccess(`Access removed for ${share.shared_with_email}.`);
@@ -770,6 +873,64 @@ export default function App() {
     }
   }
 
+  function sendCollaborationMessage(event, payload) {
+    const channel = collabChannelRef.current;
+    if (!channel || !collabReadyRef.current) return;
+    void channel.send({ type: "broadcast", event, payload }).catch(() => undefined);
+  }
+
+  function scheduleCaretBroadcast() {
+    if (collabCaretTimerRef.current) window.clearTimeout(collabCaretTimerRef.current);
+    collabCaretTimerRef.current = window.setTimeout(() => {
+      const textarea = editorRef.current;
+      const yDoc = collabDocRef.current;
+      const yText = collabTextRef.current;
+      const channel = collabChannelRef.current;
+      if (!textarea || !yDoc || !yText || !channel || !collabReadyRef.current) return;
+      const anchor = Math.min(textarea.selectionStart ?? 0, yText.length);
+      const head = Math.min(textarea.selectionEnd ?? anchor, yText.length);
+      try {
+        sendCollaborationMessage("caret", {
+          user_id: session?.user?.id,
+          tab_id: collabTabIdRef.current,
+          email: session?.user?.email || "",
+          display_name: (session?.user?.email || "Collaborator").split("@")[0],
+          role: selectedDocRole,
+          color: collaboratorColor(collabTabIdRef.current || session?.user?.id),
+          anchor: encodeBase64(Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(yText, anchor))),
+          head: encodeBase64(Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(yText, head))),
+          sent_at: Date.now(),
+        });
+      } catch {
+        // A caret can briefly refer to a stale index while concurrent changes merge.
+      }
+    }, 45);
+  }
+
+  function handleCollaborativeTextChange(event) {
+    const nextValue = event.target.value;
+    const yDoc = collabDocRef.current;
+    const yText = collabTextRef.current;
+    if (yDoc && yText && collabReadyRef.current) {
+      applyTextDiff(yDoc, yText, nextValue);
+      scheduleCaretBroadcast();
+    } else {
+      setContent(nextValue);
+    }
+  }
+
+  function handleCollaborativeTitleChange(event) {
+    const nextTitle = event.target.value;
+    titleSyncRef.current = nextTitle;
+    setTitle(nextTitle);
+    sendCollaborationMessage("title-update", {
+      title: nextTitle,
+      user_id: session?.user?.id,
+      tab_id: collabTabIdRef.current,
+      sent_at: Date.now(),
+    });
+  }
+
   function saveDocument(nextTitle = title, nextContent = content) {
     if (!session?.user?.id || !selectedDocId || !canEditSelectedDoc) return Promise.resolve();
     const documentId = selectedDocId;
@@ -808,6 +969,250 @@ export default function App() {
     const timeout = window.setTimeout(() => { void saveDocument(title, content); }, 700);
     return () => window.clearTimeout(timeout);
   }, [title, content, selectedDocId, session?.user?.id, canEditSelectedDoc]);
+
+  useEffect(() => {
+    const activeDoc = documents.find((doc) => doc.id === selectedDocId) || null;
+    if (!selectedDocId || view !== "editor" || !activeDoc || !session?.user?.id || documentsLoadedUserId !== session.user.id) {
+      setActiveCollaborators([]);
+      setRemoteCarets([]);
+      setCollaborationStatus("offline");
+      setCollaborationReady(false);
+      collabReadyRef.current = false;
+      return undefined;
+    }
+
+    let alive = true;
+    let bootstrapTimer = null;
+    let fallbackTimer = null;
+    let wasSeeded = false;
+    const documentId = selectedDocId;
+    const initialContent = activeDoc.content || content || "";
+    const initialTitle = activeDoc.title || title || "Untitled document";
+    const tabId = window.crypto?.randomUUID ? window.crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(36).slice(2);
+    collabTabIdRef.current = tabId;
+    const currentRole = activeDoc.user_id === session.user.id ? "owner" : (sharedRoleMap[documentId] || "viewer");
+    const presenceBase = {
+      tab_id: tabId,
+      user_id: session.user.id,
+      email: session.user.email || "",
+      display_name: (session.user.email || "Collaborator").split("@")[0],
+      role: currentRole,
+      color: collaboratorColor(tabId),
+      collab_ready: false,
+    };
+
+    const yDoc = new Y.Doc();
+    const yText = yDoc.getText("content");
+    collabDocRef.current = yDoc;
+    collabTextRef.current = yText;
+    collabReadyRef.current = false;
+    titleSyncRef.current = initialTitle;
+    setCollaborationReady(false);
+    setCollaborationStatus("connecting");
+    setActiveCollaborators([]);
+    setRemoteCarets([]);
+
+    const channel = supabase.channel("docnow:" + documentId, {
+      config: {
+        private: true,
+        presence: { key: tabId },
+        broadcast: { ack: true },
+      },
+    });
+    collabChannelRef.current = channel;
+
+    const refreshPresence = () => {
+      if (!alive) return;
+      const people = Object.values(channel.presenceState()).flat().filter((person) => person && person.tab_id);
+      setActiveCollaborators(people);
+      const activeTabs = new Set(people.map((person) => person.tab_id));
+      setRemoteCarets((current) => current.filter((caret) => activeTabs.has(caret.tab_id)));
+    };
+
+    const setReady = async (titleValue) => {
+      if (!alive) return;
+      collabReadyRef.current = true;
+      setCollaborationReady(true);
+      if (typeof titleValue === "string") {
+        titleSyncRef.current = titleValue;
+        setTitle(titleValue);
+      }
+      await channel.track({ ...presenceBase, collab_ready: true });
+      refreshPresence();
+    };
+
+    const sendSyncState = () => {
+      if (!alive || !collabReadyRef.current) return;
+      void channel.send({
+        type: "broadcast",
+        event: "sync-state",
+        payload: {
+          update: encodeBase64(Y.encodeStateAsUpdate(yDoc)),
+          title: titleSyncRef.current || initialTitle,
+          user_id: session.user.id,
+          tab_id: tabId,
+        },
+      }).catch(() => undefined);
+    };
+
+    const seedFromDatabase = async () => {
+      if (!alive || wasSeeded || collabReadyRef.current) return;
+      wasSeeded = true;
+      if (yText.length === 0 && initialContent) {
+        yDoc.transact(() => yText.insert(0, initialContent), "initial-database-seed");
+      }
+      await setReady(titleSyncRef.current || initialTitle);
+      sendSyncState();
+    };
+
+    const captureSelection = () => {
+      const textarea = editorRef.current;
+      if (!textarea || document.activeElement !== textarea) return null;
+      try {
+        const anchor = Math.min(textarea.selectionStart ?? 0, yText.length);
+        const head = Math.min(textarea.selectionEnd ?? anchor, yText.length);
+        return {
+          anchor: Y.createRelativePositionFromTypeIndex(yText, anchor),
+          head: Y.createRelativePositionFromTypeIndex(yText, head),
+        };
+      } catch {
+        return null;
+      }
+    };
+
+    const restoreSelection = (selection) => {
+      if (!selection) return;
+      window.requestAnimationFrame(() => {
+        const textarea = editorRef.current;
+        if (!textarea || document.activeElement !== textarea) return;
+        const anchor = Y.createAbsolutePositionFromRelativePosition(selection.anchor, yDoc);
+        const head = Y.createAbsolutePositionFromRelativePosition(selection.head, yDoc);
+        if (anchor && head) textarea.setSelectionRange(anchor.index, head.index);
+      });
+    };
+
+    yText.observe(() => {
+      if (!alive) return;
+      const nextContent = yText.toString();
+      setContent((current) => current === nextContent ? current : nextContent);
+      setDocuments((current) => current.map((doc) => (
+        doc.id === documentId && doc.content !== nextContent ? { ...doc, content: nextContent } : doc
+      )));
+    });
+
+    yDoc.on("update", (update, origin) => {
+      if (!alive || origin === channel) return;
+      void channel.send({
+        type: "broadcast",
+        event: "y-update",
+        payload: { update: encodeBase64(update), tab_id: tabId, user_id: session.user.id },
+      }).catch(() => undefined);
+    });
+
+    channel
+      .on("presence", { event: "sync" }, refreshPresence)
+      .on("presence", { event: "join" }, refreshPresence)
+      .on("presence", { event: "leave" }, refreshPresence)
+      .on("broadcast", { event: "y-update" }, ({ payload }) => {
+        if (!alive || !payload?.update || payload.tab_id === tabId) return;
+        const savedSelection = captureSelection();
+        try {
+          Y.applyUpdate(yDoc, decodeBase64(payload.update), channel);
+          restoreSelection(savedSelection);
+        } catch {
+          setGlobalError("A live edit could not be applied. Reopen the document to resync.");
+        }
+      })
+      .on("broadcast", { event: "sync-request" }, ({ payload }) => {
+        if (payload?.tab_id !== tabId) sendSyncState();
+      })
+      .on("broadcast", { event: "sync-state" }, async ({ payload }) => {
+        if (!alive || !payload?.update || payload.tab_id === tabId) return;
+        const savedSelection = captureSelection();
+        try {
+          Y.applyUpdate(yDoc, decodeBase64(payload.update), channel);
+          restoreSelection(savedSelection);
+          if (!collabReadyRef.current) {
+            await setReady(typeof payload.title === "string" ? payload.title : initialTitle);
+          } else if (typeof payload.title === "string" && payload.title !== titleSyncRef.current) {
+            titleSyncRef.current = payload.title;
+            setTitle(payload.title);
+          }
+        } catch {
+          setGlobalError("Could not sync the latest document state. Try reopening the page.");
+        }
+      })
+      .on("broadcast", { event: "title-update" }, ({ payload }) => {
+        if (!alive || payload?.tab_id === tabId || typeof payload?.title !== "string") return;
+        titleSyncRef.current = payload.title;
+        setTitle(payload.title);
+        setDocuments((current) => current.map((doc) => (
+          doc.id === documentId && doc.title !== payload.title ? { ...doc, title: payload.title } : doc
+        )));
+      })
+      .on("broadcast", { event: "caret" }, ({ payload }) => {
+        if (!alive || !payload?.tab_id || payload.tab_id === tabId || !payload.head) return;
+        setRemoteCarets((current) => {
+          const withoutSame = current.filter((caret) => caret.tab_id !== payload.tab_id);
+          return [...withoutSame, payload];
+        });
+      })
+      .on("broadcast", { event: "access-revoked" }, ({ payload }) => {
+        if (!alive || payload?.email !== (session.user.email || "").toLowerCase()) return;
+        setGlobalError("Your access to this document was revoked by its owner.");
+        updateDocumentUrl(null);
+        setSelectedDocId(null);
+        setView("home");
+        setTitle("");
+        setContent("");
+      });
+
+    channel.subscribe(async (status) => {
+      if (!alive) return;
+      if (status === "SUBSCRIBED") {
+        setCollaborationStatus("connected");
+        await channel.track(presenceBase);
+        refreshPresence();
+        bootstrapTimer = window.setTimeout(() => {
+          if (!alive || collabReadyRef.current) return;
+          const people = Object.values(channel.presenceState()).flat().filter((person) => person?.tab_id);
+          const readyPeers = people.filter((person) => person.tab_id !== tabId && person.collab_ready);
+          if (readyPeers.length) {
+            void channel.send({ type: "broadcast", event: "sync-request", payload: { tab_id: tabId } }).catch(() => undefined);
+            return;
+          }
+          const allTabs = [...new Set([...people.map((person) => person.tab_id), tabId])].sort();
+          if (allTabs[0] === tabId) {
+            void seedFromDatabase();
+          } else {
+            void channel.send({ type: "broadcast", event: "sync-request", payload: { tab_id: tabId } }).catch(() => undefined);
+          }
+        }, 700);
+        fallbackTimer = window.setTimeout(() => {
+          if (alive && !collabReadyRef.current) void seedFromDatabase();
+        }, 4500);
+      } else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+        setCollaborationStatus("offline");
+        if (!collabReadyRef.current) void seedFromDatabase();
+        else setCollaborationReady(true);
+      }
+    });
+
+    return () => {
+      alive = false;
+      if (bootstrapTimer) window.clearTimeout(bootstrapTimer);
+      if (fallbackTimer) window.clearTimeout(fallbackTimer);
+      if (collabCaretTimerRef.current) window.clearTimeout(collabCaretTimerRef.current);
+      if (collabTypingTimerRef.current) window.clearTimeout(collabTypingTimerRef.current);
+      if (collabChannelRef.current === channel) collabChannelRef.current = null;
+      if (collabDocRef.current === yDoc) collabDocRef.current = null;
+      if (collabTextRef.current === yText) collabTextRef.current = null;
+      collabReadyRef.current = false;
+      setCollaborationReady(false);
+      void supabase.removeChannel(channel);
+      yDoc.destroy();
+    };
+  }, [selectedDocId, session?.user?.id, documentsLoadedUserId, view]);
 
   async function deleteDocument() {
     if (!selectedDocId || deleteBusy || !canManageSharing) return;
@@ -970,7 +1375,8 @@ export default function App() {
             <div className="editor-scroll">
               <div className="editor-paper">
                 <div className="document-meta"><span className="document-type"><Icon name="file" size={15} /> DOCUMENT</span><span className="meta-divider">·</span><span>Edited {formatDate(selectedDoc?.updated_at)}</span><span className="meta-divider">·</span><span>{selectedDocRole === "owner" ? "Owner" : selectedDocRole === "editor" ? "Shared · Editor" : "Shared · Viewer"}</span></div>
-                <input className="document-title-input" aria-label="Document title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Untitled document" maxLength={240} readOnly={!canEditSelectedDoc} />
+                <div className="collab-presence-bar" aria-live="polite"><div className="collab-presence-status"><span className={"collab-status-dot status-" + collaborationStatus} />{collaborationStatus === "connected" ? "Live collaboration" : collaborationStatus === "connecting" ? "Connecting…" : "Live sync unavailable"}</div><div className="collab-avatar-stack">{activeCollaborators.slice(0, 5).map((person) => <span key={person.tab_id} className="collab-avatar" style={{ "--collab-color": person.color || collaboratorColor(person.tab_id) }} title={(person.display_name || person.email || "Collaborator") + " · " + (person.role || "viewer")}>{initials(person.display_name || person.email)}</span>)}{activeCollaborators.length > 5 && <span className="collab-avatar collab-avatar-more">+{activeCollaborators.length - 5}</span>}</div><span className="collab-presence-count">{activeCollaborators.length ? activeCollaborators.length + " " + (activeCollaborators.length === 1 ? "person" : "people") + " here" : collaborationStatus === "connected" ? "You’re the only one here" : "Edits still save normally"}</span></div>
+                <input className="document-title-input" aria-label="Document title" value={title} onChange={handleCollaborativeTitleChange} placeholder="Untitled document" maxLength={240} readOnly={!canEditSelectedDoc || !collaborationReady} />
                 <div className="editor-mode-switch" role="tablist" aria-label="Document mode">
                   <button type="button" role="tab" aria-selected={!previewMode} className={!previewMode ? "mode-tab active" : "mode-tab"} onClick={() => setPreviewMode(false)}><Icon name="pencil" size={15} /> Write</button>
                   <button type="button" role="tab" aria-selected={previewMode} className={previewMode ? "mode-tab active" : "mode-tab"} onClick={() => setPreviewMode(true)}><Icon name="eye" size={15} /> Preview</button>
@@ -993,7 +1399,7 @@ export default function App() {
                 {previewMode ? (
                   <div className="markdown-preview" aria-label="Rendered document preview" dangerouslySetInnerHTML={{ __html: markdownPreview || "<p class='preview-empty'>Nothing to preview yet. Switch to Write to start typing.</p>" }} />
                 ) : (
-                  <textarea ref={editorRef} className="document-editor" aria-label="Document content" value={content} onChange={(event) => setContent(event.target.value)} placeholder={"Start writing something wonderful…\n\nA thought, a plan, a list — it all starts here."} readOnly={!canEditSelectedDoc} spellCheck />
+                  <div className="collab-editor-frame"><textarea ref={editorRef} className="document-editor" aria-label="Document content" value={content} onChange={handleCollaborativeTextChange} onSelect={scheduleCaretBroadcast} onKeyUp={scheduleCaretBroadcast} onMouseUp={scheduleCaretBroadcast} onScroll={() => { scheduleCaretBroadcast(); setCaretRenderTick((value) => value + 1); }} placeholder={"Start writing something wonderful…\n\nA thought, a plan, a list — it all starts here."} readOnly={!canEditSelectedDoc || !collaborationReady} spellCheck /><div className="remote-caret-layer" aria-hidden="true" key={caretRenderTick}>{remoteCarets.map((caret) => { let position = null; try { const yDoc = collabDocRef.current; if (yDoc && caret.head) { const relative = Y.decodeRelativePosition(decodeBase64(caret.head)); position = Y.createAbsolutePositionFromRelativePosition(relative, yDoc)?.index ?? null; } } catch { position = null; } const coords = position === null ? null : textareaCaretCoordinates(editorRef.current, position); if (!coords) return null; return <div key={caret.tab_id} className="remote-caret-marker" style={{ top: coords.top, left: coords.left, height: coords.height, "--caret-color": caret.color || collaboratorColor(caret.tab_id) }}><span className="remote-caret-label">{caret.display_name || caret.email?.split("@")[0] || "Collaborator"}</span></div>; })}</div></div>
                 )}
                 <div className="editor-bottomline"><span>{wordCount} {wordCount === 1 ? "word" : "words"} <span>·</span> {characterCount} characters</span><span>{selectedDocRole === "owner" ? "You own this document" : selectedDocRole === "editor" ? "Shared with you · Editor access" : "Shared with you · Viewer access"} <span className="private-dot" /></span></div>
               </div>
