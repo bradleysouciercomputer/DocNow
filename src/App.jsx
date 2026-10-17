@@ -73,11 +73,11 @@ function escapeHtml(value) {
 
 function renderInlineMarkdown(value) {
   let html = escapeHtml(value);
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-  html = html.replace(/[([^]]+)]((https?:\/\/[^\s)]+|mailto:[^\s)]+))/g,
-    (_match, label, href) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`);
-  html = html.replace(/**(.+?)**/g, "<strong>$1</strong>");
-  html = html.replace(/(^|[^*])*([^*\n]+)*/g, "$1<em>$2</em>");
+  html = html.replace(/\`([^\`]+)\`/g, "<code>$1</code>");
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+    (_match, label, href) => '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + label + '</a>');
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
   return html;
 }
 
