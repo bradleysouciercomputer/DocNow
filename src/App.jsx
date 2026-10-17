@@ -246,7 +246,7 @@ function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, bus
             </button>
           </form>
           {isReset && <button type="button" className="back-link" onClick={() => setMode("login")}><Icon name="arrow" size={15} /> Back to sign in</button>}
-          {isUpdate && <div className="auth-footnote">Your documents stay yours. We never share them with other accounts.</div>}
+          {isUpdate && <div className="auth-footnote">You stay in control of who can access your documents.</div>}
           {!isReset && !isUpdate && <div className="auth-footnote"><Icon name="cloud" size={15} /> Your work syncs securely across your devices.</div>}
         </div>
         <div className="auth-panel-footer"><span>© 2026 DocNow</span><span><span className="footer-status-dot" /> All systems calm</span></div>
