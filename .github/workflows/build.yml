@@ -28,10 +28,6 @@ jobs:
         run: npm install
       - name: Build production site
         run: npm run build
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - name: Upload production artifact
         uses: actions/upload-pages-artifact@v4
         with:
