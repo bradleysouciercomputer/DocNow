@@ -14,6 +14,9 @@ A clean, responsive writing workspace powered by React, Vite, and Supabase, depl
 - Responsive desktop and mobile layout
 - Email-based document sharing with Viewer (read-only) and Editor (can edit) roles
 - Collaborator role management, access revocation, and document-specific invitation links
+- Real-time collaborators online/viewing status using Supabase Presence
+- Live collaborative text updates using the Yjs CRDT over private Supabase Realtime channels
+- Live remote text carets labeled by collaborator, with server-enforced room access rules
 - Row-level security enforcing document ownership and shared access on every database request
 
 ## Run locally
@@ -42,7 +45,7 @@ Every document has its own URL using the `?doc=<document-id>` query parameter. O
 
 ## Supabase setup
 
-The base schema is in `supabase/migrations/20261017000000_create_documents_table.sql`, with collaboration rules in `supabase/migrations/20261017020000_document_sharing.sql`. Both have been applied to the connected DocNow project. Document shares are keyed by normalized email. Invited users must sign in to DocNow with that email address; the database permits Viewers to read and Editors to update document content/title. Only owners can invite people, change roles, revoke access, or delete documents.
+The base schema is in `supabase/migrations/20261017000000_create_documents_table.sql`, with collaboration rules in `supabase/migrations/20261017020000_document_sharing.sql`. Both have been applied to the connected DocNow project. Document shares are keyed by normalized email. Invited users must sign in to DocNow with that email address; the database permits Viewers to read and Editors to update document content/title. Only owners can invite people, change roles, revoke access, or delete documents. Real-time collaboration uses private Supabase Realtime channels with policies scoped to the document owner and invited email addresses. The editor uses Yjs for concurrent text edits and shows other active collaborators and their live caret positions. These presence/caret features require an authenticated session and a working Supabase Realtime connection; normal document autosave still functions if live collaboration is unavailable.
 
 In Supabase **Authentication → URL Configuration**, configure the Site URL and allow these redirect URLs:
 - `https://bradleysouciercomputer.github.io/DocNow/`
