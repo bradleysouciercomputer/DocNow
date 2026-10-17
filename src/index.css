@@ -352,3 +352,48 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Writing quality-of-life features */
+.documents-heading-actions { display: flex; align-items: center; gap: 13px; }
+.sort-control { display: inline-flex; align-items: center; gap: 6px; color: #9a9eaa; border: 1px solid #e7e8eb; background: #fff; border-radius: 8px; padding: 0 9px; height: 32px; }
+.sort-control select { max-width: 145px; border: 0; outline: none; appearance: none; background: transparent; color: #717784; font-size: 10px; padding: 0; cursor: pointer; }
+.sort-control:focus-within { border-color: #c5cbf4; box-shadow: 0 0 0 3px rgba(70,93,229,.06); }
+.card-star { color: #b28b28; display: inline-flex; margin-left: 9px; }
+.favorite-button { color: #a0a4ad; flex: 0 0 auto; }
+.favorite-button.is-favorite { color: #b48a23; background: #fff5d9; }
+.favorite-button.is-favorite svg { fill: #f5d77c; }
+.editor-mode-switch { min-height: 43px; padding: 0 1px; border-top: 1px solid #eeeeeb; border-bottom: 1px solid #eeeeeb; display: flex; align-items: center; gap: 6px; margin-bottom: 19px; }
+.mode-tab { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 0; border-radius: 7px; color: #8d929c; background: transparent; font-size: 10px; font-weight: 700; }
+.mode-tab:hover { color: #5265d9; background: #f5f6ff; }
+.mode-tab.active { color: #4f62d9; background: #eef0ff; }
+.export-button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 7px; border: 1px solid #e6e7eb; border-radius: 6px; background: #fff; color: #818692; font-size: 9px; font-weight: 700; }
+.export-button:hover { color: #4d60d5; background: #f8f8ff; border-color: #d9ddfa; }
+.markdown-preview { min-height: 430px; flex: 1; padding: 3px 0 25px; color: #454b57; font-size: 13px; line-height: 1.9; overflow-wrap: anywhere; }
+.markdown-preview h1, .markdown-preview h2, .markdown-preview h3, .markdown-preview h4, .markdown-preview h5, .markdown-preview h6 { color: #272d38; font-family: "Manrope", sans-serif; letter-spacing: -.5px; line-height: 1.35; margin: 1.35em 0 .5em; }
+.markdown-preview h1 { font-size: 29px; }.markdown-preview h2 { font-size: 24px; }.markdown-preview h3 { font-size: 19px; }
+.markdown-preview p { margin: 0 0 1.1em; }
+.markdown-preview ul, .markdown-preview ol { padding-left: 25px; margin: 0 0 1.2em; }
+.markdown-preview li { margin: .2em 0; padding-left: 3px; }
+.markdown-preview blockquote { margin: 1.2em 0; border-left: 3px solid #aab4ff; padding: 3px 0 3px 15px; color: #737a8a; }
+.markdown-preview code { background: #f2f3f7; border: 1px solid #e9eaf0; border-radius: 5px; padding: 1px 5px; color: #5a61a7; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9em; }
+.markdown-preview pre { overflow: auto; border: 1px solid #e9eaf0; border-radius: 9px; background: #f8f8fb; padding: 14px; line-height: 1.7; }
+.markdown-preview pre code { border: 0; padding: 0; color: #414858; background: transparent; }
+.markdown-preview a { color: #4d60d5; text-decoration: underline; text-underline-offset: 2px; }
+.markdown-preview .preview-empty { color: #b2b6bf; font-style: italic; }
+@media (max-width: 800px) {
+  .documents-heading-actions { gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+  .sort-control { height: 30px; padding: 0 6px; }
+  .sort-control select { max-width: 120px; font-size: 9px; }
+  .documents-view-label { white-space: nowrap; }
+  .editor-actions { gap: 4px; }
+}
+@media (max-width: 540px) {
+  .documents-heading-actions { flex-direction: column-reverse; align-items: flex-end; gap: 7px; }
+  .sort-control select { max-width: 135px; }
+  .editor-actions .save-button { width: 30px; min-width: 30px; padding: 0; gap: 0; overflow: hidden; font-size: 0; }
+  .editor-actions .save-button svg { width: 15px; height: 15px; flex-shrink: 0; }
+  .editor-actions .favorite-button, .editor-actions .delete-button { width: 27px; min-width: 27px; }
+  .editor-mode-switch { gap: 4px; }
+  .mode-tab { padding: 0 7px; }
+  .export-button { padding: 0 5px; }
+}
