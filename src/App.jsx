@@ -251,7 +251,7 @@ export default function App() {
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
           password,
-          options: { emailRedirectTo: window.location.origin },
+          options: { emailRedirectTo: window.location.origin + import.meta.env.BASE_URL },
         });
         if (error) throw error;
         if (!data.session) {
@@ -260,7 +260,7 @@ export default function App() {
           setAuthSuccess("Your account is ready.");
         }
       } else if (authMode === "reset") {
-        const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+        const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin + import.meta.env.BASE_URL });
         if (error) throw error;
         setAuthSuccess("If an account exists for that email, a password reset link is on its way.");
       } else if (authMode === "update-password") {
